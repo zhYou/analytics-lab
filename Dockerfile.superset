@@ -1,0 +1,7 @@
+FROM apache/superset:6.1.0
+USER root
+RUN . /app/.venv/bin/activate && uv pip install \
+    'psycopg2-binary==2.9.13' \
+    'clickhouse-connect==1.11.0' \
+    'PyMySQL==1.2.3'
+USER superset

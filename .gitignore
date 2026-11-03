@@ -1,0 +1,8 @@
+.env
+ACCESS.txt
+fixtures/
+logs/
+__pycache__/
+screenshots/
+progress.md
+*.pyc

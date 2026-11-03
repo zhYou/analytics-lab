@@ -1,0 +1,150 @@
+name: analytics-lab
+
+services:
+  metadata:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: ${METADATA_PASSWORD}
+    volumes:
+      - metadata:/var/lib/postgresql
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U analytics -d postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.6.1.1193
+    environment:
+      CLICKHOUSE_USER: demo_admin
+      CLICKHOUSE_PASSWORD: ${SOURCE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    ports:
+      - '127.0.0.1:8123:8123'
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: [CMD, bash, -c, 'wget -qO- http://127.0.0.1:8123/ping']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0.36
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SOURCE_PASSWORD}
+      MYSQL_DATABASE: analytics_demo
+      MYSQL_USER: demo_reader
+      MYSQL_PASSWORD: ${READER_PASSWORD}
+    ports:
+      - '127.0.0.1:3307:3306'
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping -h 127.0.0.1 --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+    restart: unless-stopped
+
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve@sha256:dae91bc1f9d4c11db54e924d8d25bac7f6c50e080a8f06fc90d9468eaab81b67
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ADMIN_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ADMIN_PASSWORD}
+      ZO_DATA_DIR: /data
+      ZO_LOCAL_MODE: 'true'
+      ZO_TELEMETRY: 'false'
+      ZO_INGEST_ALLOWED_UPTO: '8760'
+      ZO_MAX_FILE_SIZE_ON_DISK: '32'
+    ports:
+      - '127.0.0.1:5080:5080'
+    volumes:
+      - openobserve:/data
+    restart: unless-stopped
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    image: analytics-lab-superset:6.1.0
+    env_file: .env
+    environment:
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_METADATA_URI: postgresql+psycopg2://analytics:${METADATA_PASSWORD}@metadata:5432/superset
+    volumes:
+      - ./superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./bootstrap_superset.py:/app/pythonpath/bootstrap_superset.py:ro
+      - ./dashboards.py:/app/pythonpath/dashboards.py:ro
+      - ./superset-init.sh:/app/pythonpath/superset-init.sh:ro
+      - ./fixtures:/demo:ro
+      - superset:/app/superset_home
+    entrypoint: [/bin/bash, /app/pythonpath/superset-init.sh]
+    depends_on:
+      metadata:
+        condition: service_healthy
+    restart: 'no'
+
+  superset:
+    image: analytics-lab-superset:6.1.0
+    env_file: .env
+    environment:
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_METADATA_URI: postgresql+psycopg2://analytics:${METADATA_PASSWORD}@metadata:5432/superset
+      SUPERSET_WEBSERVER_TIMEOUT: '120'
+      SERVER_WORKER_AMOUNT: '2'
+    ports:
+      - '127.0.0.1:8088:8088'
+    volumes:
+      - ./superset_config.py:/app/pythonpath/superset_config.py:ro
+      - superset:/app/superset_home
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8088/health]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 40s
+    restart: unless-stopped
+
+  metabase:
+    image: metabase/metabase:v0.65.2
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: metadata
+      MB_DB_PORT: '5432'
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: analytics
+      MB_DB_PASS: ${METADATA_PASSWORD}
+      MB_SITE_URL: http://localhost:3000
+      MB_SITE_NAME: Analytics Preview
+      MB_ANON_TRACKING_ENABLED: 'false'
+      MB_REPORT_TIMEZONE: Asia/Shanghai
+      JAVA_TIMEZONE: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: -Xms512m -Xmx2g
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on:
+      metadata:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  metadata:
+  clickhouse:
+  mysql:
+  openobserve:
+  superset:
