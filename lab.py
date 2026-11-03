@@ -16,25 +16,31 @@ def credentials():
     if not target.exists():
         values = {'ADMIN_EMAIL': 'admin@analytics.test', 'ADMIN_PASSWORD': 'Demo-' + secrets.token_urlsafe(15) + '!',
                   'SOURCE_PASSWORD': secrets.token_hex(20), 'READER_PASSWORD': secrets.token_hex(20),
-                  'METADATA_PASSWORD': secrets.token_hex(20), 'SUPERSET_SECRET_KEY': secrets.token_hex(40)}
+                  'METADATA_PASSWORD': secrets.token_hex(20), 'SUPERSET_SECRET_KEY': secrets.token_hex(40), 'RYBBIT_AUTH_SECRET': secrets.token_hex(32)}
         # Create with restrictive permissions before writing any secrets.
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'w') as stream:
             stream.write(''.join(f'{key}={value}\n' for key, value in values.items()))
     os.chmod(target, 0o600)
+    if 'RYBBIT_AUTH_SECRET' not in env():
+        with target.open('a') as stream:
+            stream.write('RYBBIT_AUTH_SECRET='+secrets.token_hex(32)+'\n')
 
 
 def access_file():
     settings = env()
     superset = json.loads((FIXTURES/'superset.json').read_text())
     metabase = json.loads((FIXTURES/'metabase.json').read_text())
+    rybbit = json.loads((FIXTURES/'rybbit.json').read_text())
     lines = ['Analytics Lab — local access (do not publish)', '',
              'Superset: http://localhost:8088  username: admin',
              f"Metabase: http://localhost:3000  username: {settings['ADMIN_EMAIL']}",
+             f"Rybbit: http://localhost:3001  username: {settings['ADMIN_EMAIL']}",
              f"OpenObserve: http://localhost:5080  username: {settings['ADMIN_EMAIL']}",
-             f"Password for all three demo applications: {settings['ADMIN_PASSWORD']}", '',
+             f"Password for all four demo applications: {settings['ADMIN_PASSWORD']}", '',
              *[f"Superset / {d['name']}: http://localhost:8088/superset/dashboard/{d['slug']}/" for d in superset['dashboards']],
              *[f"Metabase / {d['name']}: http://localhost:3000/dashboard/{d['id']}" for d in metabase['dashboards']],
+             *[f"Rybbit / {label}: http://localhost:3001/{rybbit['site_id']}/{route}?wellKnown=all-time" for label,route in [('概览','main'),('事件','events'),('会话漏斗','funnels'),('首访留存','retention'),('用户','users'),('路径','journeys')]],
              '', 'SQL read-only user: demo_reader', f"SQL reader password: {settings['READER_PASSWORD']}",
              'ClickHouse HTTP: 127.0.0.1:8123, databases analytics_demo / openobserve_demo',
              'MySQL: 127.0.0.1:3307, database analytics_demo',
@@ -50,6 +56,7 @@ def access_file():
 
 def verify():
     subprocess.run([sys.executable, str(ROOT/'verify.py')], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, str(ROOT/'verify_rybbit.py')], cwd=ROOT, check=True)
 
 
 def up():
@@ -70,6 +77,9 @@ def up():
     result = compose('exec', '-T', 'superset', 'cat', '/app/superset_home/demo-manifest.json', capture_output=True, text=True)
     (FIXTURES/'superset.json').write_text(result.stdout)
     bootstrap_metabase.main()
+    compose('up', '-d', '--wait', '--wait-timeout', '360', 'rybbit')
+    import bootstrap_rybbit
+    bootstrap_rybbit.main()
     access_file()
     verify()
 

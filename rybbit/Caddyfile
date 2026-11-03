@@ -1,0 +1,17 @@
+{
+    auto_https off
+    admin off
+}
+:8080 {
+    encode gzip
+    request_body max_size 10MB
+    handle /api/* {
+        reverse_proxy rybbit-backend:3001
+    }
+    handle /.well-known/* {
+        reverse_proxy rybbit-backend:3001
+    }
+    handle {
+        reverse_proxy rybbit-client:3002
+    }
+}

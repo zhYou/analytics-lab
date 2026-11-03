@@ -142,9 +142,126 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  rybbit-clickhouse:
+    image: clickhouse/clickhouse-server:26.3.17.4
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${SOURCE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    volumes:
+      - rybbit-clickhouse:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8123/ping]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  rybbit-postgres:
+    image: postgres:17.4
+    environment:
+      POSTGRES_USER: rybbit
+      POSTGRES_PASSWORD: ${SOURCE_PASSWORD}
+      POSTGRES_DB: analytics
+    volumes:
+      - rybbit-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U rybbit -d analytics]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  rybbit-redis:
+    image: redis:8.6.4-alpine
+    environment:
+      REDIS_PASSWORD: ${SOURCE_PASSWORD}
+    command: [redis-server, --requirepass, '${SOURCE_PASSWORD}', --appendonly, 'yes', --maxmemory-policy, noeviction]
+    volumes:
+      - rybbit-redis:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  rybbit-backend:
+    image: ghcr.io/rybbit-io/rybbit-backend:v2.9.2
+    environment:
+      NODE_ENV: production
+      CLICKHOUSE_HOST: http://rybbit-clickhouse:8123
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_PASSWORD: ${SOURCE_PASSWORD}
+      CLICKHOUSE_QUERY_PASSWORD: ${READER_PASSWORD}
+      POSTGRES_HOST: rybbit-postgres
+      POSTGRES_PORT: '5432'
+      POSTGRES_DB: analytics
+      POSTGRES_USER: rybbit
+      POSTGRES_PASSWORD: ${SOURCE_PASSWORD}
+      REDIS_HOST: rybbit-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${SOURCE_PASSWORD}
+      BETTER_AUTH_SECRET: ${RYBBIT_AUTH_SECRET}
+      BASE_URL: http://localhost:3001
+      DISABLE_SIGNUP: 'false'
+      DISABLE_TELEMETRY: 'true'
+      CLUSTER_WORKERS: '2'
+    depends_on:
+      rybbit-clickhouse:
+        condition: service_healthy
+      rybbit-postgres:
+        condition: service_healthy
+      rybbit-redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:3001/api/health]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
+  rybbit-client:
+    image: ghcr.io/rybbit-io/rybbit-client:v2.9.2
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:3001
+      NEXT_PUBLIC_DISABLE_SIGNUP: 'false'
+    depends_on:
+      rybbit-backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rybbit:
+    image: caddy:2.10.0
+    ports:
+      - '127.0.0.1:3001:8080'
+    volumes:
+      - ./rybbit/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      rybbit-client:
+        condition: service_started
+      rybbit-backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/api/health]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
   metadata:
   clickhouse:
   mysql:
   openobserve:
   superset:
+  rybbit-clickhouse:
+  rybbit-postgres:
+  rybbit-redis:

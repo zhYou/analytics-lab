@@ -1,10 +1,10 @@
 # Analytics Lab
 
-自部署的 Superset 与 Metabase 对比环境，包含独立的 ClickHouse、MySQL、OpenObserve，以及共享的 120 天模拟业务数据。安装完成后可直接查看经营指标、用户漏斗和留存，无需手动建库或配置图表。
+自部署的 Superset、Metabase 与 Rybbit 对比环境，包含独立的 ClickHouse、MySQL、OpenObserve，以及共享的 120 天模拟业务数据。安装完成后可直接查看经营指标、用户漏斗和留存，无需手动建库或配置图表。
 
 ## 启动
 
-需要 Docker Engine、Docker Compose v2+、Python 3.10+。首次启动会下载镜像、安装 Superset 数据库驱动并初始化数据，需联网。参考资源：4 核、8 GB 可用内存；首次下载与构建需预留磁盘空间。
+需要 Docker Engine、Docker Compose v2+、Python 3.10+。首次启动会下载镜像、安装 Superset 数据库驱动并初始化数据，需联网。参考资源：4 核、16 GB 可用内存（包含新增的独立 Rybbit 服务组）；首次下载与构建需预留磁盘空间。
 
 ```bash
 git clone https://github.com/zhYou/analytics-lab.git
@@ -21,9 +21,10 @@ cat ACCESS.txt
 | --- | --- | --- |
 | Superset 6.1.0 | http://localhost:8088 | `admin` |
 | Metabase OSS 0.65.2 | http://localhost:3000 | `admin@analytics.test` |
+| Rybbit 2.9.2 | http://localhost:3001 | `admin@analytics.test` |
 | OpenObserve | http://localhost:5080 | `admin@analytics.test` |
 
-三个应用的演示密码见本地 `ACCESS.txt`。宿主机所有发布端口均只绑定 `127.0.0.1`。此配置用于本机功能评估，使用 HTTP；跨机器部署需要自行设置入口、TLS 和访问控制。
+四个应用的演示密码见本地 `ACCESS.txt`。宿主机所有发布端口均只绑定 `127.0.0.1`。此配置用于本机功能评估，使用 HTTP；跨机器部署需要自行设置入口、TLS 和访问控制。
 
 ## 查看效果
 
@@ -77,3 +78,35 @@ python3 lab.py up       # 启动并重新应用演示配置
 ## 验证
 
 `verify.py` 对真实运行实例执行集成检查：健康检查、管理员登录、全部 Superset 图表和 Metabase 卡片查询、三数据源记录数、OpenObserve 聚合总量以及宿主机端口绑定。初始化和验证会在本机运行，GitHub 不接收本地凭据或数据库内容。
+
+
+## Rybbit 原生产品分析
+
+[Rybbit](https://github.com/rybbit-io/rybbit) 固定使用 `v2.9.2`，拥有独立的 ClickHouse 26.3.17.4、PostgreSQL 17.4、Redis 8.6.4，避免应用迁移与原 BI 演示库耦合。Caddy 将前端和 API 代理至同一入口 `http://localhost:3001`；其余 Rybbit 服务不发布宿主机端口。
+
+登录使用 `admin@analytics.test` 和本地 `ACCESS.txt` 中的同一演示密码。默认私有站点为“模拟 SaaS · 经营与行为”，提供：
+
+- [概览](http://localhost:3001/1/main?wellKnown=all-time)：访问量、用户、渠道、地区、页面。
+- [事件](http://localhost:3001/1/events?wellKnown=all-time)：注册、激活、功能使用、结算、支付、退款、支付失败。
+- [会话漏斗](http://localhost:3001/1/funnels?wellKnown=all-time)：已保存“注册页面 → 完成注册 → 完成激活”和“查看定价 → 开始结算 → 支付完成”；可在页面继续新建、修改、筛选。
+- [留存](http://localhost:3001/1/retention)：按首次活动分组的日/周留存。
+- [用户](http://localhost:3001/1/users?wellKnown=all-time)和[路径](http://localhost:3001/1/journeys?wellKnown=all-time)：用户属性、活动轨迹、页面与事件路径。
+
+初始站点 ID 为 1；若在页面新建过站点，实际链接以 `ACCESS.txt` 为准。概览、事件等链接选择全部时间，避免固定数据变旧后默认“今天”看不到记录。留存使用 Rybbit 自身的滚动观察范围，可在页面切换。
+
+数据复用原 4,000 名用户、119,271 条事件，并为每笔支付成功或失败事件各补一条定价页访问和开始结算事件，共 6,542 条衍生记录，合计 **125,813 条记录**。用户姓名和全部属性均为模拟值。演示 session 沿用原数据的“用户 + UTC 日期”分组，衍生结算步骤放入对应支付 session；它用于试用分析功能，不模拟真实 SDK 的会话超时。
+
+`bootstrap_rybbit.py` 通过 Rybbit API 初始化账号、私有站点和已保存漏斗；为了保留 120 天历史时间，历史事件和模拟用户属性直接写入 Rybbit 专属演示数据库。重复运行时核对数量，遇到部分导入或数量不符会停止，不自动覆盖。实际业务接入应使用 Rybbit tracker/SDK/API；已有 ClickHouse/MySQL/OpenObserve 表不会自动转成 Rybbit 事件。
+
+**指标对比要保留口径差异**：Rybbit 漏斗按 `session_id` 匹配会话内顺序，原 BI 漏斗按用户计算注册后 7 天内转化。Rybbit 原生留存按首次活动与后续活动计算，原 BI 按注册周与 `feature_used` 计算。两者数值无需一致。当前不生成浏览器会话回放数据。
+
+```bash
+python3 lab.py up                  # 启动全部组件、幂等初始化并验证
+python3 bootstrap_rybbit.py        # 单独重新应用 Rybbit 演示数据与漏斗
+python3 verify_rybbit.py           # 验证原生健康、私有访问、数量、漏斗、留存与用户
+```
+
+本机 HTTP 预览保留上游镜像的 Secure Cookie 配置。Chromium 对 localhost 允许此行为；Python 初始化客户端仅对固定 localhost 入口使用相同的 Cookie 例外。远程部署请配置正式域名和 HTTPS。注册入口在本机演示中保留开启；站点默认私有。
+
+
+用户详情建议从“Users”列表点击进入，以继承当前分析时间范围。上游 `v2.9.2` 的详情页不读取通用 `wellKnown` 日期参数；直接打开或刷新详情可能回到 Today，并偶发 React hydration 警告（其他页面冷加载时也观察到过一次）。此处保留上游官方镜像，已验证从列表进入的正常操作流程。
